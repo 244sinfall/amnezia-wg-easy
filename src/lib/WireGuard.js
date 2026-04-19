@@ -8,6 +8,7 @@ const QRCode = require('qrcode');
 const CRC32 = require('crc-32');
 
 const Util = require('./Util');
+const IPPool = require('./IPPool');
 const ServerError = require('./ServerError');
 
 const {
@@ -17,7 +18,7 @@ const {
   WG_CONFIG_PORT,
   WG_MTU,
   WG_DEFAULT_DNS,
-  WG_DEFAULT_ADDRESS,
+  WG_DEFAULT_ADDRESS_POOL,
   WG_PERSISTENT_KEEPALIVE,
   WG_ALLOWED_IPS,
   WG_PRE_UP,
@@ -56,7 +57,7 @@ module.exports = class WireGuard {
         const publicKey = await Util.exec(`echo ${privateKey} | wg pubkey`, {
           log: 'echo ***hidden*** | wg pubkey',
         });
-        const address = WG_DEFAULT_ADDRESS.replace('x', '1');
+        const address = WG_DEFAULT_ADDRESS_POOL.serverAddress;
 
         config = {
           server: {
@@ -97,7 +98,7 @@ module.exports = class WireGuard {
 
         throw err;
       });
-      // await Util.exec(`iptables -t nat -A POSTROUTING -s ${WG_DEFAULT_ADDRESS.replace('x', '0')}/24 -o ' + WG_DEVICE + ' -j MASQUERADE`);
+      // await Util.exec(`iptables -t nat -A POSTROUTING -s ${WG_DEFAULT_ADDRESS_POOL.cidr} -o ' + WG_DEVICE + ' -j MASQUERADE`);
       // await Util.exec('iptables -A INPUT -p udp -m udp --dport 51820 -j ACCEPT');
       // await Util.exec('iptables -A FORWARD -i wg0 -j ACCEPT');
       // await Util.exec('iptables -A FORWARD -o wg0 -j ACCEPT');
@@ -121,7 +122,7 @@ module.exports = class WireGuard {
 # Server
 [Interface]
 PrivateKey = ${config.server.privateKey}
-Address = ${config.server.address}/24
+Address = ${config.server.address}/${WG_DEFAULT_ADDRESS_POOL.prefixLength}
 ListenPort = ${WG_PORT}
 PreUp = ${WG_PRE_UP}
 PostUp = ${WG_POST_UP}
@@ -242,7 +243,7 @@ ${client.preSharedKey ? `PresharedKey = ${client.preSharedKey}\n` : ''
     return `
 [Interface]
 PrivateKey = ${client.privateKey ? `${client.privateKey}` : 'REPLACE_ME'}
-Address = ${client.address}/24
+Address = ${client.address}/${WG_DEFAULT_ADDRESS_POOL.prefixLength}
 ${WG_DEFAULT_DNS ? `DNS = ${WG_DEFAULT_DNS}\n` : ''}\
 ${WG_MTU ? `MTU = ${WG_MTU}\n` : ''}\
 Jc = ${config.server.jc}
@@ -285,17 +286,11 @@ Endpoint = ${WG_HOST}:${WG_CONFIG_PORT}`;
     const preSharedKey = await Util.exec('wg genpsk');
 
     // Calculate next IP
-    let address;
-    for (let i = 2; i < 255; i++) {
-      const client = Object.values(config.clients).find((client) => {
-        return client.address === WG_DEFAULT_ADDRESS.replace('x', i);
-      });
-
-      if (!client) {
-        address = WG_DEFAULT_ADDRESS.replace('x', i);
-        break;
-      }
-    }
+    const address = IPPool.getAvailableClientAddress(
+      WG_DEFAULT_ADDRESS_POOL,
+      Object.values(config.clients).map((client) => client.address),
+      [config.server.address],
+    );
 
     if (!address) {
       throw new Error('Maximum number of clients reached.');
